@@ -1,72 +1,75 @@
 # Bot Notification Cleaner
 
-github.com 에 접속할 때마다 **Renovate·Dependabot 이 만든 PR 알림을 자동으로 Done 처리**하는 크롬 확장.
-알림함에는 사람이 만든 PR·리뷰 요청만 남는다.
+A Chrome extension that automatically marks **PR notifications created by Renovate and Dependabot as Done** every time you visit github.com. Your inbox keeps only human-authored PRs and review requests.
 
-## 구조
+## How it works
 
 ```
 content script (github.com/*)  ──sendMessage──▶  background.js (MV3 SW)
-                                                      │ 쿨다운(30s) 통과 시
+                                                      │ if cooldown (30s) passed
                                                       ▼ connectNative
                                                  host/notif-host.py
-                                                      │ gh auth token → REST 직접 호출
+                                                      │ gh auth token → direct REST calls
                                                       ▼
-                              GET /notifications → PR 작성자 조회 → DELETE /threads/{id}
+                              GET /notifications → resolve PR author → DELETE /threads/{id}
                                                       │
-   배지 (-N / ✓ / ⚠)  ◀────── {done, scanned, error?} ─────┘
+   badge (-N / ✓ / ⚠)  ◀────── {done, scanned, error?} ─────┘
 ```
 
-- **Extension**: 트리거와 결과 표시만 담당. github.com full page load 마다 host 를 깨우되 30초 쿨다운을 둔다(탭 여러 개·연속 새로고침 중복 방지). 툴바 아이콘 클릭은 쿨다운을 무시하고 즉시 실행.
-- **호스트(`notif-host.py`)**: 판정과 API 호출 전부. `gh auth token` 으로 토큰만 얻고 이후는 `urllib` 로 직접 호출한다(알림 수만큼 `gh` 를 spawn 하면 프로세스 생성 비용이 몇 초로 불어난다). PR 작성자 조회는 8-way 병렬 + `~/.cache/bot-notif-cleaner/authors.json` 캐시.
+- **Extension**: only triggers and reports. It wakes the host on every github.com full page load, gated by a 30-second cooldown (prevents duplicate runs across multiple tabs and rapid reloads). Clicking the toolbar icon bypasses the cooldown.
+- **Host (`notif-host.py`)**: does all the classification and API work. It shells out to `gh auth token` once for a token, then calls the REST API directly via `urllib` — spawning `gh` once per notification would add seconds of process-creation overhead. PR author lookups run 8-way parallel and are cached in `~/.cache/bot-notif-cleaner/authors.json`.
 
-판정은 **PR 작성자**로만 한다 — `subject.url` 을 조회해 `user.login` 이 `renovate[bot]`/`dependabot[bot]` 인 것만 Done. 제목 휴리스틱을 쓰지 않으므로 사람 PR 을 오탐하지 않는다. 조회 실패·타임아웃은 건너뛰고 지우지 않는다.
+Classification is based **solely on the PR author**: the host fetches `subject.url` and marks the thread Done only if `user.login` is `renovate[bot]` or `dependabot[bot]`. No title heuristics, so human PRs are never misclassified. Lookups that fail or time out are skipped rather than deleted.
 
-## 설치
+Only the notification inbox is scanned (`GET /notifications` without `all=true`). Passing `all=true` also returns already-read and already-Done threads, and the response carries no field to tell them apart — which would both inflate the count and re-process the same threads on every run.
 
-**준비**: `brew install gh`, `gh auth login`
+## Install
 
-### 1. Extension 로드 (→ Extension ID 확정)
+**Prerequisites**: `brew install gh`, `gh auth login`
 
-1. `chrome://extensions` → 우상단 **개발자 모드** ON
-2. **압축해제된 확장 프로그램을 로드** → `extension/` 폴더 선택
-3. 카드에 표시되는 **ID** 복사
+### 1. Load the extension (to get its ID)
 
-### 2. 네이티브 호스트 설치
+1. `chrome://extensions` → enable **Developer mode** (top right)
+2. **Load unpacked** → select the `extension/` folder
+3. Copy the **ID** shown on the card
+
+### 2. Install the native messaging host
 
 ```bash
-./install.sh <복사한_EXTENSION_ID>
+./install.sh <EXTENSION_ID>
 ```
 
-### 3. gh 토큰 스코프 확인
+### 3. Verify token scopes
 
 ```bash
-gh api /notifications --jq 'length'   # 숫자가 나오면 OK
+gh api /notifications --jq 'length'   # a number means you're good
 ```
 
-403 이면 `notifications` 스코프를 추가한다. (`repo` 스코프가 있으면 대개 그대로 통과한다.)
+If this returns 403, add the `notifications` scope. (A token with `repo` usually passes as is.)
 
 ```bash
 gh auth refresh -h github.com -s notifications
 ```
 
-### 4. 확장 reload
+### 4. Reload the extension
 
-`chrome://extensions` 에서 reload → github.com 접속.
+Reload from `chrome://extensions`, then visit github.com.
 
-## 배지
+## Badges
 
-| 배지 | 의미 |
-|------|------|
-| `…` (회색) | 스캔 중 |
-| `-N` (초록) | N건 Done 처리 (4초 후 사라짐) |
-| `✓` (회색) | 대상 없음 (4초 후 사라짐) |
-| `⚠` (빨강) | 오류 — 아이콘에 마우스를 올리면 사유 표시. 조치할 때까지 남아있다 |
+| Badge | Meaning |
+|-------|---------|
+| `…` (gray) | Scanning |
+| `-N` (green) | N threads marked Done (clears after 4s) |
+| `✓` (gray) | Nothing to do (clears after 4s) |
+| `⚠` (red) | Error — hover the icon for the reason. Stays until resolved |
 
-## 디버깅
+## Debugging
 
 ```bash
-python3 host/notif-host.py --dry    # 판정 결과만 출력, 아무것도 지우지 않음
+python3 host/notif-host.py --dry    # print classification only, delete nothing
 ```
 
-확장 쪽 로그는 `chrome://extensions` → 카드의 **서비스 워커** 링크 → 콘솔에서 `[NotifCleaner]` prefix 로 확인.
+The host is spawned fresh on every `connectNative`, so edits to the Python file take effect without reloading the extension.
+
+For the extension side, open `chrome://extensions` → **service worker** on the card, and look for the `[NotifCleaner]` prefix in the console.
