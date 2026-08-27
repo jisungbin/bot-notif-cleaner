@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Bot Notification Cleaner",
+  "version": "1.0.0",
+  "description": "github.com 접속 시 Renovate/Dependabot PR 알림을 자동 Done 처리",
+  "permissions": ["nativeMessaging", "storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_title": "봇 PR 알림 정리" },
+  "background": { "service_worker": "background.js" }
+}
